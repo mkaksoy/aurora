@@ -1,0 +1,92 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+build/
+out/
+.output/
+.vite/
+.vite-inspect/
+
+# Tauri / Rust build output
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/.tauri/
+src-tauri/target-*/
+
+# Tauri bundled resources generated locally
+src-tauri/kotlin-lsp
+src-tauri/kotlin-lsp.exe
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+cargo-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+
+# TypeScript / test / coverage artifacts
+*.tsbuildinfo
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+vitest-report/
+
+# Package manager caches
+.npm/
+.pnpm-store/
+.yarn/*
+!.yarn/patches/
+!.yarn/plugins/
+!.yarn/releases/
+!.yarn/sdks/
+!.yarn/versions/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.code-workspace
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+
+# Local certificates and secrets
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx

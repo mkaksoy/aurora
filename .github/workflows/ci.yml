@@ -33,6 +33,29 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      - name: Fix icon formats
+        run: |
+          pip install pillow -q
+          python3 - <<'EOF'
+          import glob
+          from PIL import Image
+          for path in glob.glob("src-tauri/icons/*.png"):
+              img = Image.open(path).convert("RGBA")
+              img.save(path)
+          EOF
+
+      - name: Download Kotlin LSP (Linux)
+        run: |
+          VERSION=$(gh release view --repo Kotlin/kotlin-lsp --json tagName -q '.tagName' | sed 's/kotlin-lsp\/v//')
+          echo "Downloading kotlin-lsp version: ${VERSION}"
+          curl -fL "https://download-cdn.jetbrains.com/kotlin-lsp/${VERSION}/kotlin-server-${VERSION}.tar.gz" \
+            -o kotlin-lsp.tar.gz
+          mkdir -p src-tauri/kotlin-lsp
+          tar -xzf kotlin-lsp.tar.gz -C src-tauri/kotlin-lsp
+          rm kotlin-lsp.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -76,6 +99,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download Kotlin LSP (Windows)
+        run: |
+          $version = (gh release view --repo Kotlin/kotlin-lsp --json tagName -q '.tagName') -replace 'kotlin-lsp/v', ''
+          Write-Host "Downloading kotlin-lsp version: $version"
+          $url = "https://download-cdn.jetbrains.com/kotlin-lsp/$version/kotlin-server-$version.win.zip"
+          curl.exe -fL $url -o kotlin-lsp.zip
+          New-Item -ItemType Directory -Force -Path src-tauri\kotlin-lsp
+          Expand-Archive -Path kotlin-lsp.zip -DestinationPath src-tauri\kotlin-lsp -Force
+          Remove-Item kotlin-lsp.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

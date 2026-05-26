@@ -124,12 +124,15 @@ export const useIDEStore = create<IDEState>((set) => ({
   }),
 
   openFile: (file, path) => set((state) => {
-    const existingTab = state.tabs.find(t => t.id === file.id)
+    const normalizedPath = normalizePath(path)
+    const existingTab = state.tabs.find((tab) =>
+      normalizePath(tab.path) === normalizedPath || normalizePath(tab.id) === normalizedPath
+    )
     if (existingTab) {
-      return { activeTabId: file.id, selectedFileId: file.id }
+      return { activeTabId: existingTab.id, selectedFileId: existingTab.id }
     }
     const newTab: Tab = {
-      id: file.id,
+      id: path,
       name: file.name,
       path,
       content: file.content || '',
@@ -138,8 +141,8 @@ export const useIDEStore = create<IDEState>((set) => ({
     }
     return {
       tabs: [...state.tabs, newTab],
-      activeTabId: file.id,
-      selectedFileId: file.id,
+      activeTabId: newTab.id,
+      selectedFileId: newTab.id,
     }
   }),
 
@@ -202,3 +205,7 @@ export const useIDEStore = create<IDEState>((set) => ({
   }),
   setPendingReveal: (target) => set({ pendingReveal: target }),
 }))
+
+function normalizePath(path: string) {
+  return path.replace(/\\/g, '/').toLowerCase()
+}

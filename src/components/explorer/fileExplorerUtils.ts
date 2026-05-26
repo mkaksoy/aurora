@@ -63,6 +63,20 @@ export async function readFileContent(absolutePath: string): Promise<string> {
   catch { return ""; }
 }
 
+export function hasKotlinProjectFiles(nodes: FileNode[]): boolean {
+  return nodes.some((node) => {
+    if (node.type === "folder") return hasKotlinProjectFiles(node.children ?? []);
+
+    return (
+      node.language === "kotlin" ||
+      node.name.endsWith(".kt") ||
+      node.name.endsWith(".kts") ||
+      node.name === "build.gradle" ||
+      node.name === "settings.gradle"
+    );
+  });
+}
+
 export async function watchDirectory(
   path: string,
   onChange: () => void,

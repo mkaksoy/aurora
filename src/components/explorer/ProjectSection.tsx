@@ -15,9 +15,11 @@ import { InlineInput } from "./InlineInput";
 import {
   joinPath,
   getFolderName,
+  hasKotlinProjectFiles,
   readDirRecursive,
   watchDirectory,
 } from "./fileExplorerUtils";
+import { startKotlinLsp, stopKotlinLsp } from "@/components/editor/lib/kotlinLsp";
 
 type CreatingType = "file" | "folder" | null;
 
@@ -114,8 +116,16 @@ function useProjectState() {
       clearSelection();
       setExpanded(true);
 
-      setFiles(await readDirRecursive(path));
+      const nodes = await readDirRecursive(path);
+      setFiles(nodes);
       setProjectRoot(path);
+      if (hasKotlinProjectFiles(nodes)) {
+        void startKotlinLsp(path).catch((error) => {
+          console.error("LSP baslatilamadi:", error);
+        });
+      } else {
+        void stopKotlinLsp().catch(console.error);
+      }
 
       await startWatcher(path);
     } catch (err) {
@@ -127,7 +137,7 @@ function useProjectState() {
 
   async function closeProject() {
     try {
-      await invoke("lsp_stop");
+      await stopKotlinLsp();
     } catch (err) {
       console.error(err);
     }

@@ -11,33 +11,51 @@ let starting: Promise<void> | null = null;
 let reader: TauriMessageReader | null = null;
 let writer: TauriMessageWriter | null = null;
 let registeredForMonaco: typeof monaco | null = null;
+let activeMonacoInstance: typeof monaco | null = null;
 let activeWorkspacePath: string | null = null;
+let stopping: Promise<void> | null = null;
 
 const openedUris = new Set<string>();
+const attachedModelUris = new Set<string>();
+const diagnosticEnabledUris = new Set<string>();
 const diagnosticCountsByUri = new Map<string, { errors: number; warnings: number; infos: number; hints: number }>();
 const diagnosticRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const providerDisposables: monaco.IDisposable[] = [];
 const modelDisposables: monaco.IDisposable[] = [];
 const eventUnlisteners: UnlistenFn[] = [];
 
+const DEBUG_LSP_LOGS = false;
+
 export async function startKotlinLsp(
   workspacePath: string,
-  monacoInstance: typeof monaco,
+  monacoInstance?: typeof monaco,
 ): Promise<void> {
+  if (monacoInstance) {
+    activeMonacoInstance = monacoInstance;
+  }
+
   if (connection) {
     if (activeWorkspacePath !== workspacePath) {
       await stopKotlinLsp();
     } else {
-      registerMonacoProviders(monacoInstance);
-      attachExistingModels(monacoInstance);
+      if (monacoInstance) bindMonacoInstance(monacoInstance);
       return;
     }
   }
 
-  if (starting) return starting;
+  if (starting) {
+    return starting.then(() => {
+      if (monacoInstance) bindMonacoInstance(monacoInstance);
+    });
+  }
 
   starting = startKotlinLspInner(workspacePath, monacoInstance)
     .catch((error) => {
+      if (isConnectionDisposedError(error)) {
+        setLspStatus("stopped", "Kotlin LSP stopped");
+        return;
+      }
+
       setLspStatus("error", String(error));
       throw error;
     })
@@ -50,11 +68,11 @@ export async function startKotlinLsp(
 
 async function startKotlinLspInner(
   workspacePath: string,
-  monacoInstance: typeof monaco,
+  monacoInstance?: typeof monaco,
 ): Promise<void> {
   setLspStatus("starting", "Starting Kotlin LSP process");
   activeWorkspacePath = workspacePath;
-  console.log("[LSP] starting", { workspacePath });
+  if (DEBUG_LSP_LOGS) console.debug("[LSP] starting", { workspacePath });
 
   const workspaceUri = await invoke<string>("lsp_file_uri", { path: workspacePath });
 
@@ -69,7 +87,7 @@ async function startKotlinLspInner(
         workspacePath,
       },
     });
-    console.log("[LSP] process started", startResult);
+    if (DEBUG_LSP_LOGS) console.debug("[LSP] process started", startResult);
   } catch (error) {
     if (!String(error).includes("already running")) throw error;
 
@@ -80,11 +98,11 @@ async function startKotlinLspInner(
         workspacePath,
       },
     });
-    console.log("[LSP] process restarted", startResult);
+    if (DEBUG_LSP_LOGS) console.debug("[LSP] process restarted", startResult);
   }
 
   connection = createMessageConnection(reader, writer);
-  registerConnectionHandlers(monacoInstance);
+  registerConnectionHandlers();
   connection.listen();
 
   const workspaceName =
@@ -102,20 +120,29 @@ async function startKotlinLspInner(
   });
 
   connection.sendNotification("initialized", {});
-  console.log("[LSP] initialized", initializeResult);
+  if (DEBUG_LSP_LOGS) console.debug("[LSP] initialized", initializeResult);
   setLspStatus("ready", "Kotlin LSP initialized");
 
-  registerMonacoProviders(monacoInstance);
-  attachExistingModels(monacoInstance);
-  await indexWorkspaceKotlinFiles(monacoInstance, workspacePath);
+  if (monacoInstance) bindMonacoInstance(monacoInstance);
+  await indexWorkspaceKotlinFiles(workspacePath);
 }
 
 export async function stopKotlinLsp(): Promise<void> {
+  if (stopping) return stopping;
+
+  stopping = stopKotlinLspInner().finally(() => {
+    stopping = null;
+  });
+
+  return stopping;
+}
+
+async function stopKotlinLspInner(): Promise<void> {
   for (const disposable of providerDisposables.splice(0)) {
-    disposable.dispose();
+    tryDispose(disposable);
   }
   for (const disposable of modelDisposables.splice(0)) {
-    disposable.dispose();
+    tryDispose(disposable);
   }
   for (const unlisten of eventUnlisteners.splice(0)) {
     unlisten();
@@ -125,23 +152,28 @@ export async function stopKotlinLsp(): Promise<void> {
   }
   diagnosticRefreshTimers.clear();
   openedUris.clear();
+  attachedModelUris.clear();
+  diagnosticEnabledUris.clear();
   diagnosticCountsByUri.clear();
   registeredForMonaco = null;
+  activeMonacoInstance = null;
   activeWorkspacePath = null;
 
-  if (connection) {
+  const currentConnection = connection;
+  connection = null;
+
+  if (currentConnection) {
     try {
-      await connection.sendRequest("shutdown");
-      connection.sendNotification("exit");
+      await currentConnection.sendRequest("shutdown");
+      currentConnection.sendNotification("exit");
     } catch {
       // Rust tarafinda process yine kapatilacak.
     }
-    connection.dispose();
-    connection = null;
+    tryDispose(currentConnection);
   }
 
-  reader?.dispose();
-  writer?.dispose();
+  tryDispose(reader);
+  tryDispose(writer);
   reader = null;
   writer = null;
 
@@ -173,11 +205,14 @@ async function listenToLspEvents() {
 
   eventUnlisteners.push(
     await listen("lsp://stopped", () => {
-      console.warn("[LSP] process stopped");
-      connection?.dispose();
+      if (DEBUG_LSP_LOGS) console.debug("[LSP] process stopped");
+      tryDispose(connection);
       connection = null;
       openedUris.clear();
+      attachedModelUris.clear();
+      diagnosticEnabledUris.clear();
       diagnosticCountsByUri.clear();
+      activeMonacoInstance = null;
       activeWorkspacePath = null;
       useIDEStore.getState().setLspIndexProgress(0, 0, "Kotlin LSP process stopped");
       useIDEStore.getState().clearDiagnostics();
@@ -186,26 +221,42 @@ async function listenToLspEvents() {
   );
 }
 
-function registerConnectionHandlers(monacoInstance: typeof monaco) {
+function tryDispose(disposable: { dispose: () => void } | null | undefined) {
+  try {
+    disposable?.dispose();
+  } catch (error) {
+    if (!isConnectionDisposedError(error)) throw error;
+  }
+}
+
+function registerConnectionHandlers() {
   if (!connection) return;
 
   connection.onNotification("window/logMessage", (params: any) => {
     const message = params.message ?? params;
-    if (isNoisyMissingGradleScriptLog(message)) {
+    if (isNoisyLspLog(message)) {
       console.debug("[LSP log]", message);
       return;
     }
 
-    console.log("[LSP log]", message);
+    if (params.type === 1 || params.type === 2) {
+      console.warn("[LSP log]", message);
+    } else if (DEBUG_LSP_LOGS) {
+      console.debug("[LSP log]", message);
+    }
   });
 
   connection.onNotification("window/showMessage", (params: any) => {
-    console.log("[LSP msg]", params.message ?? params);
+    if (params.type === 1 || params.type === 2) {
+      console.warn("[LSP msg]", params.message ?? params);
+    } else if (DEBUG_LSP_LOGS) {
+      console.debug("[LSP msg]", params.message ?? params);
+    }
   });
 
   connection.onNotification("textDocument/publishDiagnostics", (params: any) => {
     const diagnostics = params.diagnostics ?? [];
-    applyDiagnostics(monacoInstance, params.uri, diagnostics);
+    applyDiagnostics(params.uri, diagnostics);
   });
 
   connection.onRequest("workspace/configuration", (params: any) => {
@@ -221,6 +272,12 @@ function registerConnectionHandlers(monacoInstance: typeof monaco) {
     applied: false,
     failureReason: "Aurora does not apply workspace edits yet.",
   }));
+}
+
+function bindMonacoInstance(monacoInstance: typeof monaco) {
+  activeMonacoInstance = monacoInstance;
+  registerMonacoProviders(monacoInstance);
+  attachExistingModels(monacoInstance);
 }
 
 function registerMonacoProviders(monacoInstance: typeof monaco) {
@@ -239,7 +296,9 @@ function registerMonacoProviders(monacoInstance: typeof monaco) {
             position: toLspPosition(position),
           });
           const items = Array.isArray(result) ? result : result?.items ?? [];
-          console.log("[LSP] completion", { uri: modelUri(model), items: items.length });
+          if (DEBUG_LSP_LOGS) {
+            console.debug("[LSP] completion", { uri: modelUri(model), items: items.length });
+          }
 
           return {
             suggestions: items.map((item: any) => ({
@@ -274,7 +333,9 @@ function registerMonacoProviders(monacoInstance: typeof monaco) {
             textDocument: { uri: modelUri(model) },
             position: toLspPosition(position),
           });
-          console.log("[LSP] hover", { uri: modelUri(model), hasResult: Boolean(result) });
+          if (DEBUG_LSP_LOGS) {
+            console.debug("[LSP] hover", { uri: modelUri(model), hasResult: Boolean(result) });
+          }
           if (!result?.contents) return null;
 
           return {
@@ -304,10 +365,19 @@ function registerMonacoProviders(monacoInstance: typeof monaco) {
           if (!result) return null;
 
           const locations = Array.isArray(result) ? result : [result];
-          return locations.map((location: any) => ({
-            uri: monacoInstance.Uri.parse(location.targetUri ?? location.uri),
-            range: toMonacoRange(monacoInstance, location.targetRange ?? location.range),
-          }));
+          const definitions = await Promise.all(
+            locations.map(async (location: any) => {
+              const uri = monacoInstance.Uri.parse(location.targetUri ?? location.uri);
+              await ensureDefinitionModel(monacoInstance, uri);
+
+              return {
+                uri,
+                range: toMonacoRange(monacoInstance, location.targetRange ?? location.range),
+              };
+            }),
+          );
+
+          return definitions;
         } catch (error) {
           if (!isLspCanceled(error)) {
             console.warn("[LSP] definition error", error);
@@ -323,10 +393,7 @@ function registerMonacoProviders(monacoInstance: typeof monaco) {
   );
 }
 
-async function indexWorkspaceKotlinFiles(
-  monacoInstance: typeof monaco,
-  workspacePath: string,
-) {
+async function indexWorkspaceKotlinFiles(workspacePath: string) {
   const files = collectKotlinFiles(useIDEStore.getState().files);
   const total = files.length;
 
@@ -336,29 +403,14 @@ async function indexWorkspaceKotlinFiles(
     return;
   }
 
-  useIDEStore.getState().setLspIndexProgress(0, total, `Indexing Kotlin files (0/${total})`);
+  if (!connection || activeWorkspacePath !== workspacePath) return;
 
-  for (let index = 0; index < files.length; index += 1) {
-    if (!connection || activeWorkspacePath !== workspacePath) return;
-
-    const file = files[index];
-    const uri = monacoInstance.Uri.parse(fileUriFromPath(file.id));
-    let model = monacoInstance.editor.getModel(uri);
-
-    if (!model) {
-      const text = await readTextFile(file.id).catch(() => "");
-      model = monacoInstance.editor.createModel(text, "kotlin", uri);
-    }
-
-    attachModel(monacoInstance, model);
-    useIDEStore.getState().setLspIndexProgress(
-      index + 1,
-      total,
-      `Indexing Kotlin files (${index + 1}/${total})`,
-    );
-  }
-
-  setLspStatus("ready", `Ready - indexed ${total} Kotlin file${total === 1 ? "" : "s"}`);
+  useIDEStore.getState().setLspIndexProgress(
+    total,
+    total,
+    `Ready - Kotlin LSP warmed for ${total} Kotlin file${total === 1 ? "" : "s"}`,
+  );
+  setLspStatus("ready", `Ready - Kotlin LSP warmed for ${total} Kotlin file${total === 1 ? "" : "s"}`);
 }
 
 function collectKotlinFiles(nodes: FileNode[]): FileNode[] {
@@ -408,7 +460,6 @@ function publishDiagnosticCounts() {
 }
 
 function applyDiagnostics(
-  monacoInstance: typeof monaco,
   uri: string,
   diagnostics: any[],
 ) {
@@ -421,8 +472,12 @@ function applyDiagnostics(
     ),
   );
 
+  const monacoInstance = activeMonacoInstance;
+  if (!monacoInstance) return;
+
   const model = monacoInstance.editor.getModel(monacoInstance.Uri.parse(uri));
   if (!model) return;
+  if (!diagnosticEnabledUris.has(uri)) return;
 
   monacoInstance.editor.setModelMarkers(
     model,
@@ -438,10 +493,7 @@ function applyDiagnostics(
   );
 }
 
-function scheduleDocumentDiagnostics(
-  monacoInstance: typeof monaco,
-  model: monaco.editor.ITextModel,
-) {
+function scheduleDocumentDiagnostics(model: monaco.editor.ITextModel) {
   const uri = modelUri(model);
   const existingTimer = diagnosticRefreshTimers.get(uri);
   if (existingTimer) clearTimeout(existingTimer);
@@ -450,15 +502,12 @@ function scheduleDocumentDiagnostics(
     uri,
     setTimeout(() => {
       diagnosticRefreshTimers.delete(uri);
-      void requestDocumentDiagnostics(monacoInstance, model);
+      void requestDocumentDiagnostics(model);
     }, 500),
   );
 }
 
-async function requestDocumentDiagnostics(
-  monacoInstance: typeof monaco,
-  model: monaco.editor.ITextModel,
-) {
+async function requestDocumentDiagnostics(model: monaco.editor.ITextModel) {
   if (!connection || model.getLanguageId() !== "kotlin") return;
 
   const uri = modelUri(model);
@@ -470,7 +519,7 @@ async function requestDocumentDiagnostics(
     });
 
     if (!report || report.kind === "unchanged") return;
-    applyDiagnostics(monacoInstance, uri, report.items ?? []);
+    applyDiagnostics(uri, report.items ?? []);
   } catch (error) {
     console.warn("[LSP] diagnostics error", { uri, error });
   }
@@ -485,23 +534,29 @@ function attachExistingModels(monacoInstance: typeof monaco) {
 function attachModel(
   monacoInstance: typeof monaco,
   model: monaco.editor.ITextModel,
+  options: { diagnostics?: boolean } = {},
 ) {
   if (!connection || model.getLanguageId() !== "kotlin") return;
 
   const uri = modelUri(model);
-  if (openedUris.has(uri)) return;
-  openedUris.add(uri);
-  console.log("[LSP] didOpen", { uri, languageId: model.getLanguageId() });
+  const enableDiagnostics = options.diagnostics ?? true;
+  if (enableDiagnostics) diagnosticEnabledUris.add(uri);
 
-  connection.sendNotification("textDocument/didOpen", {
-    textDocument: {
-      uri,
-      languageId: "kotlin",
-      version: model.getVersionId(),
-      text: model.getValue(),
-    },
-  });
-  void requestDocumentDiagnostics(monacoInstance, model);
+  if (!openedUris.has(uri)) {
+    openTextDocument(uri, model.getValue(), "kotlin", model.getVersionId());
+  } else {
+    connection.sendNotification("textDocument/didChange", {
+      textDocument: { uri, version: model.getVersionId() },
+      contentChanges: [{ text: model.getValue() }],
+    });
+  }
+
+  if (enableDiagnostics) {
+    void requestDocumentDiagnostics(model);
+  }
+
+  if (attachedModelUris.has(uri)) return;
+  attachedModelUris.add(uri);
 
   modelDisposables.push(
     model.onDidChangeContent(() => {
@@ -509,15 +564,18 @@ function attachModel(
         textDocument: { uri, version: model.getVersionId() },
         contentChanges: [{ text: model.getValue() }],
       });
-      scheduleDocumentDiagnostics(monacoInstance, model);
+      scheduleDocumentDiagnostics(model);
     }),
   );
 
   modelDisposables.push(
     model.onWillDispose(() => {
       openedUris.delete(uri);
+      attachedModelUris.delete(uri);
+      diagnosticEnabledUris.delete(uri);
       diagnosticCountsByUri.delete(uri);
       useIDEStore.getState().setDiagnosticsForUri(uri, []);
+      publishDiagnosticCounts();
       const timer = diagnosticRefreshTimers.get(uri);
       if (timer) clearTimeout(timer);
       diagnosticRefreshTimers.delete(uri);
@@ -527,6 +585,40 @@ function attachModel(
       });
     }),
   );
+}
+
+function openTextDocument(
+  uri: string,
+  text: string,
+  languageId: string,
+  version: number,
+) {
+  if (!connection || openedUris.has(uri)) return;
+
+  openedUris.add(uri);
+  if (DEBUG_LSP_LOGS) console.debug("[LSP] didOpen", { uri, languageId });
+
+  connection.sendNotification("textDocument/didOpen", {
+    textDocument: {
+      uri,
+      languageId,
+      version,
+      text,
+    },
+  });
+}
+
+async function ensureDefinitionModel(
+  monacoInstance: typeof monaco,
+  uri: monaco.Uri,
+) {
+  if (uri.scheme !== "file") return;
+  if (monacoInstance.editor.getModel(uri)) return;
+
+  const text = await readTextFile(uri.fsPath).catch(() => null);
+  if (text === null) return;
+
+  monacoInstance.editor.createModel(text, languageFromPath(uri.fsPath), uri);
 }
 
 function setLspStatus(
@@ -567,6 +659,16 @@ function fileNameFromPath(path: string) {
   return path.replace(/\\/g, "/").split("/").pop() ?? path;
 }
 
+function languageFromPath(path: string) {
+  const name = fileNameFromPath(path);
+
+  if (name.endsWith(".kt") || name.endsWith(".kts")) return "kotlin";
+  if (name.endsWith(".java")) return "java";
+  if (name.endsWith(".xml")) return "xml";
+  if (name.endsWith(".gradle")) return "groovy";
+  return "text";
+}
+
 function diagnosticSeverityName(severity?: number): DiagnosticItem["severity"] {
   if (severity === 1) return "error";
   if (severity === 2) return "warning";
@@ -591,13 +693,20 @@ function toDiagnosticItem(uri: string, diagnostic: any, index: number): Diagnost
   };
 }
 
-function isNoisyMissingGradleScriptLog(message: unknown) {
+function isNoisyLspLog(message: unknown) {
   if (typeof message !== "string") return false;
 
-  return (
+  if (
     message.includes("SingleRootFileViewProvider") &&
     message.includes("file not found") &&
     (message.includes("build.gradle.kts") || message.includes("settings.gradle.kts"))
+  ) {
+    return true;
+  }
+
+  return (
+    message.includes("SingleRootFileViewProvider") &&
+    message.includes("content metadata not found")
   );
 }
 
@@ -741,4 +850,14 @@ function isLspCanceled(error: unknown) {
   const text = String(value?.message ?? value ?? "");
 
   return value?.name === "Canceled" || text === "Canceled" || text.includes("Canceled: Canceled");
+}
+
+function isConnectionDisposedError(error: unknown) {
+  const text = String((error as { message?: string })?.message ?? error ?? "");
+
+  return (
+    text.includes("connection got disposed") ||
+    text.includes("Connection got disposed") ||
+    text.includes("Pending response rejected")
+  );
 }

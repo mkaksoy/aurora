@@ -1,9 +1,11 @@
 import Editor from "@monaco-editor/react";
 import { useIDEStore } from "@/store/ide-store";
 import { auroraTheme } from "@/monacoTheme";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { readTextFile } from "@tauri-apps/plugin-fs";
 import * as monaco from "monaco-editor";
+import { getLanguage, hasKotlinProjectFiles } from "@/components/explorer/fileExplorerUtils";
 import {
   fileUriFromPath,
   notifyDocumentSaved,
@@ -60,6 +62,7 @@ export function CodeEditor() {
   const {
     tabs,
     activeTabId,
+    files,
     projectRoot,
     pendingReveal,
     updateTabContent,
@@ -68,9 +71,11 @@ export function CodeEditor() {
   } =
     useIDEStore();
   const lspStartedFor = useRef<string | null>(null);
+  const openerDisposable = useRef<monaco.IDisposable | null>(null);
   const monacoRef = useRef<typeof monaco | null>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
+  const isKotlinProject = hasKotlinProjectFiles(files);
 
   function handleBeforeMount(monacoInstance: typeof monaco) {
     registerKotlinLanguage(monacoInstance);
@@ -83,10 +88,9 @@ export function CodeEditor() {
   ) {
     editorRef.current = editor;
     monacoRef.current = monacoInstance;
-    if (activeTab) {
-      setEditorModel(editor, ensureModel(monacoInstance, activeTab));
-    }
+    registerAuroraEditorOpener(monacoInstance, openerDisposable);
     if (!projectRoot || lspStartedFor.current === projectRoot) return;
+    if (!isKotlinProject) return;
 
     lspStartedFor.current = projectRoot;
     startKotlinLsp(projectRoot, monacoInstance).catch((error) => {
@@ -97,19 +101,8 @@ export function CodeEditor() {
 
   useEffect(() => {
     const editor = editorRef.current;
-    const monacoInstance = monacoRef.current;
-    if (!editor || !monacoInstance || !activeTab) return;
-
-    const model = ensureModel(monacoInstance, activeTab);
-    if (editor.getModel() !== model) {
-      setEditorModel(editor, model);
-    }
-  }, [activeTab?.id]);
-
-  useEffect(() => {
-    const editor = editorRef.current;
     if (!editor || !activeTab || !pendingReveal) return;
-    if (activeTab.path !== pendingReveal.path) return;
+    if (normalizePath(activeTab.path) !== normalizePath(pendingReveal.path)) return;
 
     editor.setPosition({
       lineNumber: pendingReveal.line,
@@ -124,6 +117,7 @@ export function CodeEditor() {
     const monacoInstance = monacoRef.current;
     if (!monacoInstance) return;
     if (!projectRoot || lspStartedFor.current === projectRoot) return;
+    if (!isKotlinProject) return;
 
     lspStartedFor.current = projectRoot;
     startKotlinLsp(projectRoot, monacoInstance).catch((error) => {
@@ -135,7 +129,14 @@ export function CodeEditor() {
       lspStartedFor.current = null;
       stopKotlinLsp().catch(console.error);
     };
-  }, [projectRoot]);
+  }, [projectRoot, isKotlinProject]);
+
+  useEffect(() => {
+    return () => {
+      openerDisposable.current?.dispose();
+      openerDisposable.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = async (event: KeyboardEvent) => {
@@ -170,6 +171,8 @@ export function CodeEditor() {
     <div className="flex-1 overflow-hidden">
       <Editor
         height="100%"
+        path={fileUriFromPath(activeTab.path)}
+        keepCurrentModel
         defaultLanguage={activeTab.language || "kotlin"}
         language={activeTab.language || "kotlin"}
         value={activeTab.content}
@@ -208,41 +211,58 @@ export function CodeEditor() {
   );
 }
 
-function ensureModel(monacoInstance: typeof monaco, tab: {
-  path: string;
-  content: string;
-  language: string;
-}) {
-  const uri = monacoInstance.Uri.parse(fileUriFromPath(tab.path));
-  let model = monacoInstance.editor.getModel(uri);
-
-  if (!model) {
-    model = monacoInstance.editor.createModel(
-      tab.content,
-      tab.language || "kotlin",
-      uri,
-    );
-  } else if (model.getValue() !== tab.content) {
-    model.setValue(tab.content);
-  }
-
-  return model;
-}
-
-function setEditorModel(
-  editor: monaco.editor.IStandaloneCodeEditor,
-  model: monaco.editor.ITextModel,
+function registerAuroraEditorOpener(
+  monacoInstance: typeof monaco,
+  disposableRef: MutableRefObject<monaco.IDisposable | null>,
 ) {
-  try {
-    editor.setModel(model);
-  } catch (error) {
-    if (!isMonacoCanceled(error)) throw error;
-  }
+  if (disposableRef.current) return;
+
+  disposableRef.current = monacoInstance.editor.registerEditorOpener({
+    async openCodeEditor(_source, resource, selectionOrPosition) {
+      const path = resource.fsPath;
+      if (!path) return false;
+
+      const name = fileNameFromPath(path);
+      const content = await readTextFile(path).catch(() => null);
+      if (content === null) return false;
+
+      const target = revealTargetFromSelection(path, selectionOrPosition);
+      const { openFile, setPendingReveal } = useIDEStore.getState();
+
+      openFile(
+        {
+          id: path,
+          name,
+          type: "file",
+          content,
+          language: getLanguage(name),
+        },
+        path,
+      );
+      setPendingReveal(target);
+
+      return true;
+    },
+  });
 }
 
-function isMonacoCanceled(error: unknown) {
-  const value = error as { name?: string; message?: string };
-  const text = String(value?.message ?? value ?? "");
+function revealTargetFromSelection(
+  path: string,
+  selectionOrPosition?: monaco.IRange | monaco.IPosition,
+) {
+  const target = selectionOrPosition as Partial<monaco.IRange & monaco.IPosition> | undefined;
 
-  return value?.name === "Canceled" || text === "Canceled" || text.includes("Canceled: Canceled");
+  return {
+    path,
+    line: target?.startLineNumber ?? target?.lineNumber ?? 1,
+    column: target?.startColumn ?? target?.column ?? 1,
+  };
+}
+
+function fileNameFromPath(path: string) {
+  return path.replace(/\\/g, "/").split("/").pop() ?? path;
+}
+
+function normalizePath(path: string) {
+  return path.replace(/\\/g, "/").toLowerCase();
 }

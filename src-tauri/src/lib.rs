@@ -4,16 +4,16 @@ mod lsp;
 fn save_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
- 
+
 #[tauri::command]
 fn create_file(path: String, content: String) -> Result<(), String> {
     if let Some(parent) = std::path::Path::new(&path).parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
- 
+
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
- 
+
 #[tauri::command]
 fn create_folder(path: String) -> Result<(), String> {
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())

@@ -50,8 +50,8 @@ jobs:
           echo "Downloading kotlin-lsp version: ${VERSION}"
           curl -fL "https://download-cdn.jetbrains.com/kotlin-lsp/${VERSION}/kotlin-server-${VERSION}.tar.gz" \
             -o kotlin-lsp.tar.gz
-          mkdir -p src-tauri/kotlin-lsp
-          tar -xzf kotlin-lsp.tar.gz -C src-tauri/kotlin-lsp
+          mkdir -p kotlin-lsp
+          tar -xzf kotlin-lsp.tar.gz -C kotlin-lsp
           rm kotlin-lsp.tar.gz
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,8 +106,8 @@ jobs:
           Write-Host "Downloading kotlin-lsp version: $version"
           $url = "https://download-cdn.jetbrains.com/kotlin-lsp/$version/kotlin-server-$version.win.zip"
           curl.exe -fL $url -o kotlin-lsp.zip
-          New-Item -ItemType Directory -Force -Path src-tauri\kotlin-lsp
-          Expand-Archive -Path kotlin-lsp.zip -DestinationPath src-tauri\kotlin-lsp -Force
+          New-Item -ItemType Directory -Force -Path kotlin-lsp
+          Expand-Archive -Path kotlin-lsp.zip -DestinationPath kotlin-lsp -Force
           Remove-Item kotlin-lsp.zip
         env:
           GH_TOKEN: ${{ github.token }}

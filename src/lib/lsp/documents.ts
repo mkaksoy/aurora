@@ -17,11 +17,9 @@ import {
   modelUri,
 } from './state'
 import {
-  applyDiagnostics,
   scheduleDocumentDiagnostics,
   requestDocumentDiagnostics,
   publishDiagnosticCounts,
-  clearUriDiagnostics,
 } from './diagnostics'
 
 export function openTextDocument(

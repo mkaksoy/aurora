@@ -6,7 +6,7 @@ import { FileNode, useIDEStore } from '@/store/ide-store'
 import { TauriMessageReader, TauriMessageWriter } from './transport'
 import {
   connection, starting, reader, writer, stopping,
-  activeMonacoInstance, activeWorkspacePath, registeredForMonaco,
+  activeWorkspacePath, 
   openedUris, attachedModelUris, diagnosticEnabledUris,
   diagnosticCountsByUri, diagnosticRefreshTimers,
   providerDisposables, modelDisposables, eventUnlisteners, watchedFilePaths,
@@ -22,7 +22,7 @@ import {
   isConnectionDisposedError,
 } from './state'
 import { applyDiagnostics } from './diagnostics'
-import { attachExistingModels, attachModel, openTextDocument } from './documents'
+import { attachExistingModels } from './documents'
 import { registerMonacoProviders } from './providers'
 import { startFileWatcher, stopFileWatcher, startWatchingStoreFiles, stopWatchingStoreFiles } from './watcher'
 

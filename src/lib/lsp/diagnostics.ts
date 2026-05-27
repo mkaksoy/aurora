@@ -8,7 +8,6 @@ import {
   diagnosticEnabledUris,
   diagnosticRefreshTimers,
   fileNameFromPath,
-  fileUriFromPath,
   modelUri,
   pathFromFileUri,
 } from './state'

@@ -8,13 +8,19 @@ document.addEventListener("contextmenu", function(e){ e.preventDefault(); }, fal
 installCancellationFilters()
 
 function isCanceledPromise(reason: unknown) {
-  const value = reason as { name?: string; message?: string }
+  if (reason == null) return false
+  
+  const value = reason as { name?: string; message?: string; code?: number }
+  
+  // Monaco'nun CancellationError'ı bazen code ile gelir
+  if (value?.name === 'Canceled') return true
+  if (value?.name === 'CancellationError') return true
+  
   const text = String(value?.message ?? value ?? '').trim()
-
+  
   return (
-    value?.name === 'Canceled' ||
     text === 'Canceled' ||
-    text.includes('Canceled: Canceled') ||
+    text.startsWith('Canceled:') ||
     text.includes('Canceled')
   )
 }

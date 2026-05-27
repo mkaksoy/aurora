@@ -22,6 +22,6 @@
       "#/*": ["./*"]
     }
   },
-  "include": ["src", "hooks"],
+  "include": ["src", "hooks", "lib"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

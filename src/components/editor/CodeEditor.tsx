@@ -1,7 +1,7 @@
 import Editor from "@monaco-editor/react";
 import { useIDEStore } from "@/store/ide-store";
 import { auroraTheme } from "@/monacoTheme";
-import { useEffect, useRef, type MutableRefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import * as monaco from "monaco-editor";
@@ -11,7 +11,7 @@ import {
   notifyDocumentSaved,
   startKotlinLsp,
   stopKotlinLsp,
-} from "./lib/kotlinLsp";
+} from "@/lib/lsp";
 
 function registerKotlinLanguage(m: typeof monaco) {
   if (m.languages.getLanguages().some((language) => language.id === "kotlin")) {
@@ -213,7 +213,7 @@ export function CodeEditor() {
 
 function registerAuroraEditorOpener(
   monacoInstance: typeof monaco,
-  disposableRef: MutableRefObject<monaco.IDisposable | null>,
+  disposableRef: RefObject<monaco.IDisposable | null>,
 ) {
   if (disposableRef.current) return;
 

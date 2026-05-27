@@ -23,7 +23,7 @@ export function TitleBar() {
           className="flex items-center gap-2 px-2 h-10"
           data-tauri-drag-region
         >
-          <img src="/aurora.svg" alt="Aurora" />
+          <img src="/aurora.svg" alt="Aurora" width="24" height="24" />
           <span className="font-semibold text-sm text-foreground">Aurora</span>
         </div>
         

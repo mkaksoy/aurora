@@ -16,9 +16,9 @@ src-tauri/gen/schemas/
 src-tauri/.tauri/
 src-tauri/target-*/
 
-# Tauri bundled resources generated locally
-src-tauri/kotlin-lsp
-src-tauri/kotlin-lsp.exe
+# Kotlin/kotlin-lsp
+kotlin-lsp
+kotlin-lsp.exe
 
 # Logs
 logs/

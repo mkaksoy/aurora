@@ -19,7 +19,7 @@ import {
   readDirRecursive,
   watchDirectory,
 } from "./fileExplorerUtils";
-import { startKotlinLsp, stopKotlinLsp } from "@/components/editor/lib/kotlinLsp";
+import { startKotlinLsp, stopKotlinLsp } from "@/lib/lsp";
 
 type CreatingType = "file" | "folder" | null;
 
